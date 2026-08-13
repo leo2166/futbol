@@ -476,3 +476,259 @@ export async function getStandings(teamKey: TeamKey): Promise<StandingRow[]> {
   rows.sort((a, b) => a.rank - b.rank)
   return rows
 }
+
+// ---- News ----
+
+export interface NewsArticle {
+  id: string
+  headline: string
+  description: string
+  published: string // ISO
+  imageUrl: string | null
+  webUrl: string | null
+  byline: string | null
+}
+
+export async function getTeamNews(teamKey: TeamKey): Promise<NewsArticle[]> {
+  const team = TEAMS[teamKey]
+  const url = `${SITE_BASE}/${team.league}/news`
+  try {
+    const data = await fetchJson<any>(url)
+    const articles = data.articles ?? []
+    const mapped: NewsArticle[] = []
+
+    for (const art of articles) {
+      // Find image
+      const img = art.images?.find((i: any) => i.url)?.url ?? null
+      mapped.push({
+        id: String(art.id || art.nowId || Math.random()),
+        headline: art.headline || "",
+        description: art.description || "",
+        published: art.published || art.lastModified || new Date().toISOString(),
+        imageUrl: img,
+        webUrl: art.links?.web?.href ?? null,
+        byline: art.byline ?? null,
+      })
+    }
+
+    return mapped.slice(0, 12)
+  } catch (err) {
+    console.error("Error fetching news:", err)
+    return []
+  }
+}
+
+// ---- Squad / Roster ----
+
+export interface SquadPlayer {
+  id: string
+  name: string
+  shortName: string
+  jersey: string
+  position: "Portero" | "Defensa" | "Centrocampista" | "Delantero" | "Otro"
+  age: number | null
+  citizenship: string | null
+  flagUrl: string | null
+  photoUrl: string | null
+}
+
+export async function getTeamSquad(teamKey: TeamKey): Promise<SquadPlayer[]> {
+  const team = TEAMS[teamKey]
+  const url = `${SITE_BASE}/${team.league}/teams/${team.espnId}/roster`
+  try {
+    const data = await fetchJson<any>(url)
+    const athletes = data.athletes ?? []
+    const players: SquadPlayer[] = []
+
+    for (const a of athletes) {
+      const posName = a.position?.name?.toLowerCase() || ""
+      let position: SquadPlayer["position"] = "Otro"
+      if (posName.includes("goalkeeper")) position = "Portero"
+      else if (posName.includes("defender") || posName.includes("back")) position = "Defensa"
+      else if (posName.includes("midfield")) position = "Centrocampista"
+      else if (posName.includes("forward") || posName.includes("striker") || posName.includes("winger") || posName.includes("attacker")) position = "Delantero"
+
+      const photoUrl = `https://a.espncdn.com/i/headshots/soccer/players/full/${a.id}.png`
+
+      players.push({
+        id: String(a.id),
+        name: a.displayName || a.fullName || "",
+        shortName: a.shortName || a.displayName || "",
+        jersey: a.jersey || "-",
+        position,
+        age: a.age || null,
+        citizenship: a.citizenship || null,
+        flagUrl: a.flag?.href || null,
+        photoUrl,
+      })
+    }
+
+    // Sort by position hierarchy: Portero -> Defensa -> Centrocampista -> Delantero -> jersey number
+    const posWeight: Record<SquadPlayer["position"], number> = {
+      Portero: 1,
+      Defensa: 2,
+      Centrocampista: 3,
+      Delantero: 4,
+      Otro: 5,
+    }
+
+    players.sort((a, b) => {
+      if (posWeight[a.position] !== posWeight[b.position]) {
+        return posWeight[a.position] - posWeight[b.position]
+      }
+      const numA = parseInt(a.jersey, 10) || 999
+      const numB = parseInt(b.jersey, 10) || 999
+      return numA - numB
+    })
+
+    return players
+  } catch (err) {
+    console.error("Error fetching squad:", err)
+    return []
+  }
+}
+
+// ---- Match Details ----
+
+export interface MatchStat {
+  name: string
+  label: string
+  homeValue: string
+  awayValue: string
+}
+
+export interface MatchTimelineEvent {
+  id: string
+  clock: string
+  text: string
+  type: "goal" | "card-yellow" | "card-red" | "sub" | "other"
+  teamId?: string
+  athleteName?: string
+}
+
+export interface MatchLineupPlayer {
+  id: string
+  name: string
+  jersey: string
+  position: string
+  starter: boolean
+}
+
+export interface MatchDetail {
+  id: string
+  date: string
+  venue: string | null
+  statusDetail: string | null
+  completed: boolean
+  competitionName: string | null
+  home: MatchSide
+  away: MatchSide
+  stats: MatchStat[]
+  events: MatchTimelineEvent[]
+  homeLineup: MatchLineupPlayer[]
+  awayLineup: MatchLineupPlayer[]
+  recapArticle?: string
+}
+
+export async function getMatchDetail(eventId: string, leagueSlug = "esp.1"): Promise<MatchDetail | null> {
+  const url = `${SITE_BASE}/${leagueSlug}/summary?event=${eventId}`
+  try {
+    const data = await fetchJson<any>(url)
+    const header = data.header
+    const comp = header?.competitions?.[0]
+    if (!comp) return null
+
+    const homeComp = comp.competitors?.find((c: any) => c.homeAway === "home")
+    const awayComp = comp.competitors?.find((c: any) => c.homeAway === "away")
+    if (!homeComp || !awayComp) return null
+
+    const home = normalizeSide(homeComp)
+    const away = normalizeSide(awayComp)
+
+    // Events / Timeline
+    const rawEvents = data.keyEvents ?? []
+    const events: MatchTimelineEvent[] = []
+    for (const e of rawEvents) {
+      const typeText = (e.type?.type || e.type?.text || "").toLowerCase()
+      let type: MatchTimelineEvent["type"] = "other"
+      if (typeText.includes("goal")) type = "goal"
+      else if (typeText.includes("red")) type = "card-red"
+      else if (typeText.includes("yellow")) type = "card-yellow"
+      else if (typeText.includes("sub")) type = "sub"
+
+      const athlete = e.participants?.[0]?.athlete?.displayName
+      events.push({
+        id: String(e.id),
+        clock: e.clock?.displayValue || "",
+        text: e.shortText || e.text || "",
+        type,
+        teamId: e.team?.id ? String(e.team.id) : undefined,
+        athleteName: athlete,
+      })
+    }
+
+    // Stats
+    const stats: MatchStat[] = []
+    const boxTeams = data.boxscore?.teams ?? []
+    const homeStats = boxTeams.find((t: any) => t.team?.id === home.teamId)?.statistics ?? []
+    const awayStats = boxTeams.find((t: any) => t.team?.id === away.teamId)?.statistics ?? []
+
+    const labelMap: Record<string, string> = {
+      possessionPct: "Posesión (%)",
+      totalShots: "Tiros totales",
+      shotsOnTarget: "Tiros a puerta",
+      foulsCommitted: "Faltas",
+      yellowCards: "Tarjetas amarillas",
+      redCards: "Tarjetas rojas",
+      offsides: "Fueras de juego",
+      wonCorners: "Córners",
+      saves: "Paradas",
+    }
+
+    for (const hs of homeStats) {
+      const name = hs.name
+      if (labelMap[name]) {
+        const as = awayStats.find((s: any) => s.name === name)
+        stats.push({
+          name,
+          label: labelMap[name],
+          homeValue: hs.displayValue ?? "0",
+          awayValue: as?.displayValue ?? "0",
+        })
+      }
+    }
+
+    // Rosters / Lineups
+    const rosters = data.rosters ?? []
+    const homeRoster = rosters.find((r: any) => String(r.team?.id) === home.teamId)?.roster ?? []
+    const awayRoster = rosters.find((r: any) => String(r.team?.id) === away.teamId)?.roster ?? []
+
+    const mapRoster = (list: any[]): MatchLineupPlayer[] =>
+      list.map((item: any) => ({
+        id: String(item.athlete?.id || Math.random()),
+        name: item.athlete?.displayName || item.athlete?.fullName || "",
+        jersey: item.jersey || "-",
+        position: item.position?.displayName || item.position?.name || "",
+        starter: Boolean(item.starter),
+      }))
+
+    return {
+      id: eventId,
+      date: comp.date || new Date().toISOString(),
+      venue: comp.venue?.fullName ?? null,
+      statusDetail: comp.status?.type?.shortDetail ?? null,
+      completed: Boolean(comp.status?.type?.completed),
+      competitionName: header?.league?.name || null,
+      home,
+      away,
+      stats,
+      events,
+      homeLineup: mapRoster(homeRoster),
+      awayLineup: mapRoster(awayRoster),
+      recapArticle: data.article?.story || undefined,
+    }
+  } catch (err) {
+    console.error("Error fetching match detail:", err)
+    return null
+  }
+}

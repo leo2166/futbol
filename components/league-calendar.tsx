@@ -14,7 +14,13 @@ function ymd(iso: string): string {
   ).padStart(2, "0")}`
 }
 
-export function LeagueCalendar({ team }: { team: TeamConfig }) {
+export function LeagueCalendar({
+  team,
+  onSelectMatch,
+}: {
+  team: TeamConfig
+  onSelectMatch?: (matchId: string) => void
+}) {
   // null date = let the API pick the next upcoming matchday.
   const [date, setDate] = useState<string | null>(null)
   const query = useLeagueCalendar(team.key, date)
@@ -89,7 +95,12 @@ export function LeagueCalendar({ team }: { team: TeamConfig }) {
           className={`grid gap-3 sm:grid-cols-2 ${query.isFetching ? "opacity-60" : ""}`}
         >
           {data.matches.map((m) => (
-            <MatchCard key={m.id} match={m} highlightTeamId={team.espnId} />
+            <MatchCard
+              key={m.id}
+              match={m}
+              highlightTeamId={team.espnId}
+              onSelectMatch={onSelectMatch}
+            />
           ))}
         </div>
       ) : (

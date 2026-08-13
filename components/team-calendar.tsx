@@ -8,7 +8,13 @@ import { EmptyState, SectionTitle } from "@/components/states"
 
 const KICKOFF_GRACE_MS = 3 * 60 * 60 * 1000 // treat a match as "current" for 3h
 
-export function TeamCalendar({ data }: { data: TeamData }) {
+export function TeamCalendar({
+  data,
+  onSelectMatch,
+}: {
+  data: TeamData
+  onSelectMatch?: (matchId: string) => void
+}) {
   const [filter, setFilter] = useState<string>("all")
 
   const filtered = useMemo(
@@ -56,7 +62,12 @@ export function TeamCalendar({ data }: { data: TeamData }) {
         {upcoming.length > 0 ? (
           <div className="grid gap-3 sm:grid-cols-2">
             {upcoming.map((m) => (
-              <MatchCard key={m.id} match={m} showCompetition />
+              <MatchCard
+                key={m.id}
+                match={m}
+                showCompetition
+                onSelectMatch={onSelectMatch}
+              />
             ))}
           </div>
         ) : (
@@ -71,7 +82,12 @@ export function TeamCalendar({ data }: { data: TeamData }) {
         {played.length > 0 ? (
           <div className="grid gap-3 sm:grid-cols-2">
             {played.map((m) => (
-              <MatchCard key={m.id} match={m} showCompetition />
+              <MatchCard
+                key={m.id}
+                match={m}
+                showCompetition
+                onSelectMatch={onSelectMatch}
+              />
             ))}
           </div>
         ) : (

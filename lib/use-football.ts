@@ -1,7 +1,15 @@
 "use client"
 
 import { keepPreviousData, useQuery } from "@tanstack/react-query"
-import type { LeagueCalendar, StandingRow, TeamData, TeamKey } from "@/lib/football-api"
+import type {
+  LeagueCalendar,
+  MatchDetail,
+  NewsArticle,
+  SquadPlayer,
+  StandingRow,
+  TeamData,
+  TeamKey,
+} from "@/lib/football-api"
 
 async function getJson<T>(url: string): Promise<T> {
   const res = await fetch(url)
@@ -42,3 +50,26 @@ export function useLeagueCalendar(teamKey: TeamKey, date: string | null) {
     placeholderData: keepPreviousData, // keep matchday visible while navigating
   })
 }
+
+export function useTeamNews(teamKey: TeamKey) {
+  return useQuery({
+    queryKey: ["news", teamKey],
+    queryFn: () => getJson<NewsArticle[]>(`/api/news/${teamKey}`),
+  })
+}
+
+export function useTeamSquad(teamKey: TeamKey) {
+  return useQuery({
+    queryKey: ["squad", teamKey],
+    queryFn: () => getJson<SquadPlayer[]>(`/api/squad/${teamKey}`),
+  })
+}
+
+export function useMatchDetail(matchId: string | null, league = "esp.1") {
+  return useQuery({
+    queryKey: ["match", matchId, league],
+    queryFn: () => (matchId ? getJson<MatchDetail>(`/api/match/${matchId}?league=${league}`) : null),
+    enabled: Boolean(matchId),
+  })
+}
+
