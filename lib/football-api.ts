@@ -387,67 +387,87 @@ function normalizeEvent(e: EspnEvent, fallbackCompetition?: string): Match | nul
   }
 }
 
-// Resolve the team's full cross-competition schedule.
-//
-// Verified quirks:
-//  - The `/{league}/teams/{id}/schedule` path returns ONLY that league's games.
-//    The `/all/teams/{id}/schedule` path returns EVERY competition the club
-//    plays (league + Champions/Concacaf + domestic cups + friendlies), which is
-//    exactly the "games outside their own league" the calendar must include.
-//  - The upcoming season (e.g. 2026-27) is often not published yet and returns
-//    0-1 events. We probe the upcoming season first (per the user's priority),
-//    but fall back to the season that actually has a full schedule so we never
-//    render an empty/placeholder calendar.
+// Resolve the team's fixtures exclusively for the NEW season (2026-27 for Europe, 2026 for MLS).
 async function fetchScheduleResolved(
   team: TeamConfig,
 ): Promise<{ events: Match[]; seasonLabel: string | null }> {
-  const year = new Date().getFullYear()
-  const candidates = [year, year - 1] // upcoming first, then current/previous
-  const scheduleUrl = (season: number) =>
-    `${SITE_BASE}/all/teams/${team.espnId}/schedule?season=${season}`
+  try {
+    const isEuropean = team.league === "esp.1"
+    const minDateCutoff = isEuropean ? "2026-06-01" : "2026-01-01"
+    const seasonYear = 2026
 
-  const parse = (data: EspnScheduleResponse) =>
-    (data.events ?? [])
-      .map((e) => normalizeEvent(e))
-      .filter((m): m is Match => m !== null)
+    // 1) Fetch league-wide calendar for the new season
+    const scoreBase = `${SITE_BASE}/${team.league}/scoreboard`
+    const meta = await fetchJson<EspnScoreboardResponse>(scoreBase)
+    const dates = (meta.leagues?.[0]?.calendar ?? []).filter(Boolean)
 
-  let best: { events: Match[]; seasonLabel: string | null } | null = null
-  for (const season of candidates) {
-    const data = await fetchJson<EspnScheduleResponse>(scheduleUrl(season))
-    const events = parse(data)
-    // A real, in-use season has a full fixture list; ignore a stray friendly
-    // in a not-yet-published upcoming season.
-    if (events.length >= 5) {
-      return { events, seasonLabel: null } // label derived from dates later
+    const ymds = dates.map((dt) => isoToYmd(dt))
+
+    // Parallel fetch matchdays from the scoreboard calendar
+    const scoreboardPromises = ymds.map((ymd) =>
+      fetchJson<EspnScoreboardResponse>(`${scoreBase}?dates=${ymd}`)
+        .then((data) => data.events ?? [])
+        .catch(() => [] as EspnEvent[]),
+    )
+
+    // 2) Also fetch cross-competition schedule for the new season (friendlies, tour, cups)
+    const teamSchedulePromise = fetchJson<EspnScheduleResponse>(
+      `${SITE_BASE}/all/teams/${team.espnId}/schedule?season=${seasonYear}`,
+    )
+      .then((data) => data.events ?? [])
+      .catch(() => [] as EspnEvent[])
+
+    const [scoreboardEventsNested, extraScheduleEvents] = await Promise.all([
+      Promise.all(scoreboardPromises),
+      teamSchedulePromise,
+    ])
+
+    const allEventsRaw: EspnEvent[] = [
+      ...scoreboardEventsNested.flat(),
+      ...extraScheduleEvents,
+    ]
+
+    // Deduplicate by event ID and filter only matches for this team
+    const seenIds = new Set<string>()
+    const teamMatches: Match[] = []
+
+    for (const e of allEventsRaw) {
+      if (!e?.id || seenIds.has(e.id)) continue
+      const hasTeam = e.competitions?.[0]?.competitors?.some(
+        (c) => String(c.team?.id) === String(team.espnId),
+      )
+      if (!hasTeam) continue
+
+      const norm = normalizeEvent(e, team.leagueName)
+      if (!norm) continue
+
+      // Strictly ensure the match belongs to the NEW season
+      if (norm.date >= minDateCutoff) {
+        seenIds.add(e.id)
+        teamMatches.push(norm)
+      }
     }
-    if (!best || events.length > best.events.length) {
-      best = { events, seasonLabel: null }
-    }
+
+    // Sort ascending by date
+    teamMatches.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+
+    const seasonLabel = isEuropean ? "2026-27" : "2026"
+    return { events: teamMatches, seasonLabel }
+  } catch (err) {
+    console.error("Error in fetchScheduleResolved:", err)
+    return { events: [], seasonLabel: team.league === "esp.1" ? "2026-27" : "2026" }
   }
-
-  return best ?? { events: [], seasonLabel: null }
-}
-
-// ESPN's season.displayName can be misleading (it reports the platform's
-// "current" season even when the returned events belong to another). Derive a
-// truthful label from the actual event date range instead.
-function deriveSeasonLabel(events: Match[]): string | null {
-  if (events.length === 0) return null
-  const years = events.map((m) => new Date(m.date).getFullYear())
-  const min = Math.min(...years)
-  const max = Math.max(...years)
-  return min === max ? String(min) : `${min}-${String(max).slice(2)}`
 }
 
 export async function getTeamData(teamKey: TeamKey): Promise<TeamData> {
   const team = TEAMS[teamKey]
-  const { events } = await fetchScheduleResolved(team)
+  const { events, seasonLabel } = await fetchScheduleResolved(team)
 
   const matches = [...events].sort(
     (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime(),
   )
 
-  // Competition breakdown, ordered by how many games each has.
+  // Competition breakdown
   const counts = new Map<string, { name: string; short: string; count: number }>()
   for (const m of matches) {
     if (!m.competition) continue
@@ -460,7 +480,7 @@ export async function getTeamData(teamKey: TeamKey): Promise<TeamData> {
 
   return {
     team,
-    seasonLabel: deriveSeasonLabel(matches),
+    seasonLabel: seasonLabel ?? (team.league === "esp.1" ? "2026-27" : "2026"),
     competitions,
     matches,
   }
@@ -475,10 +495,7 @@ function isoToYmd(iso: string): string {
   ).padStart(2, "0")}`
 }
 
-// League-wide calendar via the scoreboard endpoint. Unlike the team schedule,
-// the scoreboard exposes a `calendar` array of every fixture date in the
-// current season (verified: esp.1 → 2026-27 already has scheduled matchdays),
-// so this genuinely surfaces the season that is starting.
+// League-wide calendar via the scoreboard endpoint for the current season.
 export async function getLeagueCalendar(
   teamKey: TeamKey,
   dateYmd?: string,
@@ -489,8 +506,8 @@ export async function getLeagueCalendar(
   // 1) Pull the season calendar (list of fixture dates) + season label.
   const meta = await fetchJson<EspnScoreboardResponse>(base)
   const league = meta.leagues?.[0]
-  const leagueName = league?.name ?? team.leagueName
-  const seasonLabel = league?.season?.displayName ?? null
+  const leagueName = league?.name ? shortCompetition(league.name) : team.leagueName
+  const seasonLabel = team.league === "esp.1" ? "2026-27" : (league?.season?.displayName ?? "2026")
   const dates = (league?.calendar ?? []).filter(Boolean)
 
   // 2) Decide which date to show.
@@ -498,7 +515,7 @@ export async function getLeagueCalendar(
   if (!targetYmd) {
     const todayYmd = isoToYmd(new Date().toISOString())
     const upcoming = dates.find((iso) => isoToYmd(iso) >= todayYmd)
-    targetYmd = upcoming ? isoToYmd(upcoming) : dates.length ? isoToYmd(dates[dates.length - 1]) : undefined
+    targetYmd = upcoming ? isoToYmd(upcoming) : dates.length ? isoToYmd(dates[0]) : undefined
   }
 
   const index = targetYmd ? dates.findIndex((iso) => isoToYmd(iso) === targetYmd) : -1
@@ -530,49 +547,34 @@ function statText(entry: EspnStandingsEntry, name: string): string {
 
 export async function getStandings(teamKey: TeamKey): Promise<StandingRow[]> {
   const team = TEAMS[teamKey]
-  const year = new Date().getFullYear()
-  const candidates = [year, year - 1]
-  const url = (season?: number) =>
-    `${CORE_BASE}/${team.league}/standings${season ? `?season=${season}` : ""}`
+  const seasonYear = 2026
+  const url = `${CORE_BASE}/${team.league}/standings?season=${seasonYear}`
 
-  // A season can return a full table whose stats are all zero because no games
-  // have been played yet (e.g. the upcoming season). Prefer the first season
-  // that has actual matches played; keep any non-empty table as a fallback.
-  const totalPlayed = (list: EspnStandingsEntry[]) =>
-    list.reduce((sum, e) => {
-      const s = e.stats.find((x) => x.name === "gamesPlayed")
-      return sum + (typeof s?.value === "number" ? s.value : 0)
-    }, 0)
+  try {
+    const data = await fetchJson<EspnStandingsResponse>(url)
+    const entries = data.children?.[0]?.standings?.entries ?? data.standings?.entries ?? []
 
-  let entries: EspnStandingsEntry[] = []
-  for (const season of candidates) {
-    const data = await fetchJson<EspnStandingsResponse>(url(season))
-    const e = data.children?.[0]?.standings?.entries ?? data.standings?.entries ?? []
-    if (e.length === 0) continue
-    if (entries.length === 0) entries = e // remember first non-empty as fallback
-    if (totalPlayed(e) > 0) {
-      entries = e
-      break
-    }
+    const rows: StandingRow[] = entries.map((entry) => ({
+      teamId: entry.team.id,
+      name: entry.team.displayName,
+      logo: pickLogo(entry.team),
+      rank: statNumber(entry, "rank"),
+      points: statNumber(entry, "points"),
+      played: statNumber(entry, "gamesPlayed"),
+      wins: statNumber(entry, "wins"),
+      draws: statNumber(entry, "ties"),
+      losses: statNumber(entry, "losses"),
+      goalDiff: statText(entry, "pointDifferential"),
+      goalsFor: statNumber(entry, "pointsFor"),
+      goalsAgainst: statNumber(entry, "pointsAgainst"),
+    }))
+
+    rows.sort((a, b) => a.rank - b.rank)
+    return rows
+  } catch (err) {
+    console.error("Error fetching standings:", err)
+    return []
   }
-
-  const rows: StandingRow[] = entries.map((entry) => ({
-    teamId: entry.team.id,
-    name: entry.team.displayName,
-    logo: pickLogo(entry.team),
-    rank: statNumber(entry, "rank"),
-    points: statNumber(entry, "points"),
-    played: statNumber(entry, "gamesPlayed"),
-    wins: statNumber(entry, "wins"),
-    draws: statNumber(entry, "ties"),
-    losses: statNumber(entry, "losses"),
-    goalDiff: statText(entry, "pointDifferential"),
-    goalsFor: statNumber(entry, "pointsFor"),
-    goalsAgainst: statNumber(entry, "pointsAgainst"),
-  }))
-
-  rows.sort((a, b) => a.rank - b.rank)
-  return rows
 }
 
 // ---- News ----
