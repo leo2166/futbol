@@ -159,18 +159,114 @@ export interface Match {
   away: MatchSide
 }
 
+export function translateCountry(c?: string | null): string | null {
+  if (!c) return null
+  const map: Record<string, string> = {
+    Spain: "España",
+    France: "Francia",
+    Germany: "Alemania",
+    England: "Inglaterra",
+    Poland: "Polonia",
+    Netherlands: "Países Bajos",
+    Denmark: "Dinamarca",
+    Hungary: "Hungría",
+    Belgium: "Bélgica",
+    Brazil: "Brasil",
+    Argentina: "Argentina",
+    Uruguay: "Uruguay",
+    Italy: "Italia",
+    Portugal: "Portugal",
+    Sweden: "Suecia",
+    Egypt: "Egipto",
+    Mali: "Malí",
+    Israel: "Israel",
+    "United States": "Estados Unidos",
+    USA: "Estados Unidos",
+    Colombia: "Colombia",
+    Chile: "Chile",
+    Ecuador: "Ecuador",
+    Venezuela: "Venezuela",
+    Paraguay: "Paraguay",
+    Peru: "Perú",
+    Mexico: "México",
+    Morocco: "Marruecos",
+    Senegal: "Senegal",
+    Japan: "Japón",
+    "South Korea": "Corea del Sur",
+    Croatia: "Croacia",
+    Serbia: "Serbia",
+    Switzerland: "Suiza",
+    Austria: "Austria",
+    Norway: "Noruega",
+    Ukraine: "Ucrania",
+    Turkey: "Turquía",
+    Czechia: "República Checa",
+    "Czech Republic": "República Checa",
+  }
+  return map[c] ?? c
+}
+
+export function translatePosition(pos?: string | null): string {
+  if (!pos) return "Jugador"
+  const p = pos.toLowerCase()
+  if (p.includes("goal") || p.includes("arquero") || p.includes("portero")) return "Portero"
+  if (
+    p.includes("center back") ||
+    p.includes("centre-back") ||
+    p.includes("central defender") ||
+    p.includes("center right defender") ||
+    p.includes("center left defender")
+  )
+    return "Defensa Central"
+  if (p.includes("right back") || p.includes("right wing back")) return "Lateral Derecho"
+  if (p.includes("left back") || p.includes("left wing back")) return "Lateral Izquierdo"
+  if (p.includes("defender") || p.includes("back")) return "Defensa"
+  if (p.includes("defensive midfield") || p.includes("holding")) return "Pivote"
+  if (p.includes("attacking midfield") || p.includes("playmaker")) return "Mediapunta"
+  if (p.includes("central midfield") || p.includes("midfield")) return "Centrocampista"
+  if (p.includes("right wing") || p.includes("right forward")) return "Extremo Derecho"
+  if (p.includes("left wing") || p.includes("left forward")) return "Extremo Izquierdo"
+  if (
+    p.includes("striker") ||
+    p.includes("center forward") ||
+    p.includes("forward") ||
+    p.includes("delantero")
+  )
+    return "Delantero Centro"
+  return pos
+}
+
+export function translateStatus(status?: string | null): string {
+  if (!status) return ""
+  const s = status.toUpperCase()
+  if (s === "FT" || s === "FINAL" || s === "STATUS_FULL_TIME") return "Final"
+  if (s === "HT" || s === "HALFTIME" || s === "STATUS_HALFTIME") return "Descanso"
+  if (s === "POSTPONED") return "Pospuesto"
+  if (s === "CANCELLED") return "Cancelado"
+  if (s === "DELAYED") return "Retrasado"
+  if (s === "SCHEDULED") return "Programado"
+  if (s.includes("IN PROGRESS") || s.includes("LIVE")) return "En Vivo"
+  return status
+}
+
 // Human-friendly, compact competition labels (Spanish UI).
 export function shortCompetition(name: string): string {
   const map: Record<string, string> = {
     "Spanish LALIGA": "LaLiga",
-    "UEFA Champions League": "Champions",
+    LALIGA: "LaLiga",
+    "UEFA Champions League": "Champions League",
+    "Champions League": "Champions League",
     "Spanish Copa del Rey": "Copa del Rey",
-    "Spanish Supercopa": "Supercopa",
-    "Trofeo Joan Gamper": "Gamper",
+    "Copa del Rey": "Copa del Rey",
+    "Spanish Supercopa": "Supercopa de España",
+    Supercopa: "Supercopa",
+    "Trofeo Joan Gamper": "Trofeo Gamper",
     "Club Friendly": "Amistoso",
+    Friendly: "Amistoso",
     MLS: "MLS",
+    "Major League Soccer": "MLS",
     "Leagues Cup": "Leagues Cup",
-    "Concacaf Champions Cup": "Concacaf",
+    "Concacaf Champions Cup": "Copa de Campeones Concacaf",
     "U.S. Open Cup": "US Open Cup",
   }
   return map[name] ?? name
@@ -210,9 +306,11 @@ export interface LeagueCalendar {
 // ---- Fetch helpers ----
 
 async function fetchJson<T>(url: string): Promise<T> {
-  const res = await fetch(url, { headers: { Accept: "application/json" } })
+  const separator = url.includes("?") ? "&" : "?"
+  const finalUrl = url.includes("lang=") ? url : `${url}${separator}lang=es&region=es`
+  const res = await fetch(finalUrl, { headers: { Accept: "application/json" } })
   if (!res.ok) {
-    throw new Error(`ESPN request failed (${res.status}) for ${url}`)
+    throw new Error(`ESPN request failed (${res.status}) for ${finalUrl}`)
   }
   return (await res.json()) as T
 }
@@ -281,7 +379,7 @@ function normalizeEvent(e: EspnEvent, fallbackCompetition?: string): Match | nul
     date: e.date,
     venue: comp.venue?.fullName ?? null,
     state,
-    statusDetail: type?.shortDetail ?? null,
+    statusDetail: translateStatus(type?.shortDetail) || (type?.completed ? "Final" : null),
     completed: Boolean(type?.completed),
     competition: normalizeCompetition(e.league, fallbackCompetition),
     home: normalizeSide(home),
@@ -543,10 +641,10 @@ export async function getTeamSquad(teamKey: TeamKey): Promise<SquadPlayer[]> {
     for (const a of athletes) {
       const posName = a.position?.name?.toLowerCase() || ""
       let position: SquadPlayer["position"] = "Otro"
-      if (posName.includes("goalkeeper")) position = "Portero"
-      else if (posName.includes("defender") || posName.includes("back")) position = "Defensa"
-      else if (posName.includes("midfield")) position = "Centrocampista"
-      else if (posName.includes("forward") || posName.includes("striker") || posName.includes("winger") || posName.includes("attacker")) position = "Delantero"
+      if (posName.includes("goalkeeper") || posName.includes("arquero") || posName.includes("portero")) position = "Portero"
+      else if (posName.includes("defender") || posName.includes("back") || posName.includes("defensa")) position = "Defensa"
+      else if (posName.includes("midfield") || posName.includes("volante") || posName.includes("medio")) position = "Centrocampista"
+      else if (posName.includes("forward") || posName.includes("striker") || posName.includes("winger") || posName.includes("attacker") || posName.includes("delantero")) position = "Delantero"
 
       const photoUrl = `https://a.espncdn.com/i/headshots/soccer/players/full/${a.id}.png`
 
@@ -557,7 +655,7 @@ export async function getTeamSquad(teamKey: TeamKey): Promise<SquadPlayer[]> {
         jersey: a.jersey || "-",
         position,
         age: a.age || null,
-        citizenship: a.citizenship || null,
+        citizenship: translateCountry(a.citizenship) || a.citizenship || null,
         flagUrl: a.flag?.href || null,
         photoUrl,
       })
@@ -651,10 +749,10 @@ export async function getMatchDetail(eventId: string, leagueSlug = "esp.1"): Pro
     for (const e of rawEvents) {
       const typeText = (e.type?.type || e.type?.text || "").toLowerCase()
       let type: MatchTimelineEvent["type"] = "other"
-      if (typeText.includes("goal")) type = "goal"
-      else if (typeText.includes("red")) type = "card-red"
-      else if (typeText.includes("yellow")) type = "card-yellow"
-      else if (typeText.includes("sub")) type = "sub"
+      if (typeText.includes("goal") || typeText.includes("gol")) type = "goal"
+      else if (typeText.includes("red") || typeText.includes("roja")) type = "card-red"
+      else if (typeText.includes("yellow") || typeText.includes("amarilla")) type = "card-yellow"
+      else if (typeText.includes("sub") || typeText.includes("cambio") || typeText.includes("sustituci")) type = "sub"
 
       const athlete = e.participants?.[0]?.athlete?.displayName
       events.push({
@@ -708,7 +806,7 @@ export async function getMatchDetail(eventId: string, leagueSlug = "esp.1"): Pro
         id: String(item.athlete?.id || Math.random()),
         name: item.athlete?.displayName || item.athlete?.fullName || "",
         jersey: item.jersey || "-",
-        position: item.position?.displayName || item.position?.name || "",
+        position: translatePosition(item.position?.displayName || item.position?.name || ""),
         starter: Boolean(item.starter),
       }))
 
@@ -716,9 +814,9 @@ export async function getMatchDetail(eventId: string, leagueSlug = "esp.1"): Pro
       id: eventId,
       date: comp.date || new Date().toISOString(),
       venue: comp.venue?.fullName ?? null,
-      statusDetail: comp.status?.type?.shortDetail ?? null,
+      statusDetail: translateStatus(comp.status?.type?.shortDetail) || (comp.status?.type?.completed ? "Final" : "Programado"),
       completed: Boolean(comp.status?.type?.completed),
-      competitionName: header?.league?.name || null,
+      competitionName: header?.league?.name ? shortCompetition(header.league.name) : null,
       home,
       away,
       stats,
@@ -732,3 +830,4 @@ export async function getMatchDetail(eventId: string, leagueSlug = "esp.1"): Pro
     return null
   }
 }
+
