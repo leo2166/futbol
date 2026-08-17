@@ -6,8 +6,8 @@
 // We must resolve the correct `season` year dynamically by probing candidates
 // and picking the first one that actually returns events. Never hardcode a year.
 
-const SITE_BASE = "https://site.api.espn.com/apis/site/v2/sports/soccer"
-const CORE_BASE = "https://site.api.espn.com/apis/v2/sports/soccer"
+const SITE_BASE = "https://site.web.api.espn.com/apis/site/v2/sports/soccer"
+const CORE_BASE = "https://site.web.api.espn.com/apis/v2/sports/soccer"
 
 export type TeamKey = "barcelona" | "real-madrid" | "inter-miami"
 
